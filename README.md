@@ -29,7 +29,7 @@ Trained using the [Garbage Classification Dataset](https://www.kaggle.com/datase
 
 ### 1. Clone the Repository
 ```bash
-git clone [https://github.com/yourusername/smart-waste-classifier.git](https://github.com/yourusername/smart-waste-classifier.git)
+git clone [https://github.com/sakshampaswanofficial/waste-classification-.git]
 cd smart-waste-classifier
 ```
 
