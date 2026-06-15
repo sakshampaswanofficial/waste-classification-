@@ -1,98 +1,136 @@
-import cv2
+import json
 import numpy as np
+import streamlit as st
 import tensorflow as tf
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from PIL import Image
+from pathlib import Path
+from tensorflow.keras.applications.efficientnet import preprocess_input
 
-# 1. Load your 12-class model
-model_path = 'waste_classifier_12classes.keras'
-print("Loading model...")
-model = tf.keras.models.load_model(model_path)
-print("Model loaded successfully!")
 
-# 2. Dictionary of all 12 specific classes
-CLASS_NAMES = {
-    0: 'battery', 
-    1: 'biological', 
-    2: 'brown-glass', 
-    3: 'cardboard', 
-    4: 'clothes', 
-    5: 'green-glass', 
-    6: 'metal', 
-    7: 'paper', 
-    8: 'plastic', 
-    9: 'shoes', 
-    10: 'trash', 
-    11: 'white-glass'
-}
+# 1. PAGE CONFIGURATION (RENDER THIS FIRST)
 
-# 3. Setup the Broad Category Logic
-# If the prediction is in this list, it is Hazardous. Otherwise, Non-Hazardous.
-HAZARDOUS_ITEMS = ['battery'] 
+st.set_page_config(page_title="AI Waste Classifier", page_icon="♻️", layout="centered")
+st.title("♻️ Live AI Waste Classification")
+st.write("Hold an item up to your webcam to determine its hierarchical taxonomy and safety protocol.")
 
-cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 
-if not cap.isOpened():
-    print("Error: Could not open webcam.")
-    exit()
+# 2. BULLETPROOF FILE PATHS
 
-print("Press 'q' in the video window to quit.")
+# This ensures it always finds the artifacts folder, no matter where your terminal is opened
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR /  "D:\\ml\\test\\best_production_model.keras"
+MAPPING_PATH = BASE_DIR / "class_mapping.json"
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
 
-    # Mirror the camera for intuitive movement
-    frame = cv2.flip(frame, 1)
+# 3. LOAD AI ARTIFACTS INTO MEMORY
 
-    # Define the Targeting Box
-    h, w, _ = frame.shape
-    box_size = 224 
-    start_x = (w - box_size) // 2
-    start_y = (h - box_size) // 2
-    end_x = start_x + box_size
-    end_y = start_y + box_size
+@st.cache_resource
+def load_system():
+    # Pre-check if files exist so it doesn't crash silently
+    if not MODEL_PATH.exists():
+        return None, None, f"Model file not found at: {MODEL_PATH}"
+    if not MAPPING_PATH.exists():
+        return None, None, f"Mapping file not found at: {MAPPING_PATH}"
+        
+    try:
+        model = tf.keras.models.load_model(MODEL_PATH)
+        with open(MAPPING_PATH, "r") as f:
+            raw_map = json.load(f)
+            class_map = {int(k): v for k, v in raw_map.items()}
+        return model, class_map, None
+    except Exception as e:
+        return None, None, str(e)
 
-    # Draw the targeting rectangle
-    cv2.rectangle(frame, (start_x, start_y), (end_x, end_y), (255, 0, 0), 2)
-    cv2.putText(frame, "Place Waste Here", (start_x, start_y - 10), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+# Render a beautiful UI spinner so you know the screen isn't frozen
+with st.spinner("🧠 Mounting AI Brain into Memory (This takes 10-20 seconds on first load)..."):
+    model, class_mapping, system_error = load_system()
 
-    # Crop and Preprocess
-    roi = frame[start_y:end_y, start_x:end_x]
-    rgb_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-    img_array = np.expand_dims(rgb_roi, axis=0)
-    img_array = preprocess_input(img_array)
+# If the load failed, show a giant red error on the screen, not in the hidden terminal
+if system_error:
+    st.error(f"**Critical System Error:** {system_error}")
+    st.stop()
 
-    # Predict
-    predictions = model.predict(img_array, verbose=0)[0]
-    class_idx = np.argmax(predictions)
-    
-    # Get the specific label and confidence
-    specific_label = CLASS_NAMES[class_idx]
-    confidence = predictions[class_idx]
 
-    # Map to the broad category
-    if specific_label in HAZARDOUS_ITEMS:
-        broad_category = "Hazardous"
-        color = (0, 0, 255) # Red text
+# 4. HIERARCHY TRANSLATOR
+
+def translate_to_hierarchy(folder_name: str):
+    """Translates the raw folder name into your strict 4-tier data flow."""
+    # Tier 1 & 2
+    if folder_name.startswith('hw_'):
+        risk = "Hazardous"
+        color = "#e74c3c" # Red
+        if 'ewaste' in folder_name: category = "E-Waste"
+        elif 'chem' in folder_name: category = "Chemicals"
+        elif 'med' in folder_name: category = "Medical"
+        else: category = "Unknown Hazard"
     else:
-        broad_category = "Non-Hazardous"
-        color = (0, 200, 0) # Green text
+        risk = "Non-Hazardous"
+        color = "#2ecc71" # Green
+        if 'comp' in folder_name and 'noncomp' not in folder_name: category = "Compostable"
+        elif 'rec' in folder_name and 'nonrec' not in folder_name: category = "Recyclable"
+        elif 'nonrec' in folder_name: category = "Landfill (Non-Recyclable)"
+        else: category = "Unknown Safe"
 
-    # 4. Visual Overlay (Stacked Text like the Kaggle output)
-    text_line1 = f"Pred: {broad_category}"
-    text_line2 = f"Type: {specific_label} ({confidence*100:.1f}%)"
+    # Tier 3 (Clean up the exact item name)
+    item_name = folder_name.split('_')[-1].capitalize()
 
-    # Draw the text at the top left of the screen
-    cv2.putText(frame, text_line1, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
-    cv2.putText(frame, text_line2, (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
+    return risk, category, item_name, color
 
-    # Show the video feed
-    cv2.imshow('Live Waste Classifier', frame)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+# 5. LIVE CAMERA INTERFACE
 
-cap.release()
-cv2.destroyAllWindows()
+st.markdown("---")
+# Streamlit's built-in webcam widget
+camera_image = st.camera_input("Scan your waste item")
+
+if camera_image is not None:
+    # 1. Read and Display the Image
+    image = Image.open(camera_image).convert('RGB')
+    
+    with st.spinner("Scanning item via EfficientNet..."):
+        # 2. Preprocess exactly like the Kaggle pipeline
+        img_resized = image.resize((224, 224))
+        img_array = np.array(img_resized)
+        img_array = np.expand_dims(img_array, axis=0)
+        img_array = preprocess_input(img_array)
+        
+        # 3. Run Inference
+        predictions = model.predict(img_array, verbose=0)[0]
+        predicted_idx = int(np.argmax(predictions))
+        confidence = float(predictions[predicted_idx]) * 100
+        
+        predicted_folder = class_mapping.get(predicted_idx, "Unknown")
+        
+        # 4. Map to Hierarchy
+        risk, category, item_name, color = translate_to_hierarchy(predicted_folder)
+        
+
+    # 6. RENDER THE DATA FLOW RESULTS
+
+    st.markdown("---")
+    st.subheader("Classification Results")
+    
+    # Display the confidence score
+    st.metric(label="AI Confidence Score", value=f"{confidence:.2f}%")
+    
+    # Display the hierarchical flow
+    st.markdown(f"### Master Data Flow Pathway:")
+    flow_html = f"""
+    <div style='padding: 20px; border-radius: 10px; background-color: #1e1e1e; border: 1px solid #444;'>
+        <h4 style='color: white; margin: 0; font-family: monospace;'>
+            🗑️ Waste &nbsp;➔&nbsp; 
+            <span style='color: {color};'>{risk}</span> &nbsp;➔&nbsp; 
+            <span style='color: lightblue;'>{category}</span> &nbsp;➔&nbsp; 
+            <span style='color: gold;'>{item_name}</span>
+        </h4>
+        <p style='color: gray; margin-top: 15px; font-size: 14px;'>Target Node: <code>{predicted_folder}</code></p>
+    </div>
+    """
+    st.markdown(flow_html, unsafe_allow_html=True)
+    
+    # Display actionable warning if Hazardous
+    st.markdown("<br>", unsafe_allow_html=True)
+    if risk == "Hazardous":
+        st.error("⚠️ **HAZARDOUS MATERIAL DETECTED:** Do not place in standard bins. Follow specialized disposal protocols immediately.")
+    else:
+        st.success("✅ **SAFE MATERIAL:** Proceed with standard sorting protocols.")
